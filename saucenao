@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+
+import argparse  # docs at https://docs.python.org/3/library/argparse.html
+
+import os
+import sys
+import asyncio
+from pysaucenao import SauceNao  # docs at https://github.com/MakotoAme/pysaucenao
+
+# api docs at https://saucenao.com/user.php?page=search-api
+
+db_name_num_map = {
+    "all": 999,
+    "h_magazines": "0",
+    "h_game_cg": "2",
+    "doujinshidb": "3",
+    "pixiv": "5",
+    "pixiv_historical": "6",
+    "nico_nico_seiga": "8",
+    "danbooru": "9",
+    "drawr_images": "10",
+    "nijie_images": "11",
+    "yande.re": "12",
+    "shutterstock": "15",
+    "fakku": "16",
+    "h_misc": "18",
+    "2d_market": "19",
+    "medibang": "20",
+    "anime": "21",
+    "h_anime": "22",
+    "movies": "23",
+    "shows": "24",
+    "gelbooru": "25",
+    "konachan": "26",
+    "sankaku_channel": "27",
+    "anime_pictures_net": "28",
+    "e621.net": "29",
+    "idol_complex": "30",
+    "bcy_net_illust": "31",
+    "bcy_net_cosplay": "32",
+    "portalgraphics_net_hist": "33",
+    "deviantart": "34",
+    "pawoo_net": "35",
+    "madokami_manga": "36",
+    "mangadex": "37",
+    "e-hentai": "38",
+    "artstation": "39",
+    "furaffinity": "40",
+    "twitter": "41",
+    "furry_network": "42",
+}  # see https://saucenao.com/tools/examples/api/index_details.txt
+
+
+def earlier_in_list(list, item1, item2):
+    if list.index(item1) < list.index(item2):
+        return item1
+    else:
+        return item2
+
+
+def later_in_list(list, item1, item2):
+    if list.index(item1) > list.index(item2):
+        return item1
+    else:
+        return item2
+
+
+# parse args
+
+
+parser = argparse.ArgumentParser(
+    prog="Saucenao querier", description="Queries saucenao.", epilog="Some epilog."
+)
+
+parser.add_argument(
+    "-m",
+    "--min-similarity",
+    default=70,
+    type=int,
+    help="Minimum similarity to return. 1 - 100. Default: 70",
+)
+parser.add_argument("-f", "--file", help="File to query.")
+parser.add_argument("-u", "--url", help="URL to query.")
+parser.add_argument(
+    "-d",
+    "--database",
+    default="all",
+    choices=dict.keys(db_name_num_map),
+    help="Database to query. Default: all",
+)
+parser.add_argument(
+    "-p",
+    "--output-properties",
+    default="booru_url",
+    help="Properties to output. Comma separated. Available: Depends on source. General: booru_id, similarity, title, thumbnail, title, author_name, author_url, url, source_url, index, episode, year, timestamp. Default: booru_url",
+)
+parser.add_argument(
+    "-s",
+    "--source-hierarchy",
+    default="gelbooru,danbooru",
+    help="Within the results, which source to output the properties of. Comma-separated. If there is no result with a matching source, exits with error. Default: gelbooru,danbooru,yandere",
+)
+
+args = parser.parse_args()
+
+# transform args
+
+db = db_name_num_map[args.database]
+
+# build request
+
+sauce = SauceNao(
+    api_key=os.getenv("SAUCENAO_API_KEY"),
+    db_mask=None,
+    db_mask_disable=None,
+    db=db,
+    results_limit=10,
+    min_similarity=args.min_similarity,
+    test_mode=0,
+    strict_mode=True,
+    loop=None,
+)
+
+# get results
+
+if args.url:
+    results = asyncio.run(sauce.from_url(args.url))
+elif args.file:
+    results = asyncio.run(sauce.from_file(args.file))
+else:
+    print("No file or URL specified.")
+    sys.exit(1)
+
+# process results
+
+source_hierarchy = args.source_hierarchy.lower().split(",")
+desired_result = ""
+
+for result in results:
+    result_name = result.index.lower()
+    for source in source_hierarchy:  # check all sources we might want
+        # the result we already have is the same or higher in the hierarchy compared to the current source
+        if desired_result and desired_result.index.lower() == source:
+            break
+        elif (
+            result_name == source
+        ):  # the current result is in the source hierarchy, and our current one isn't higher in the hierarchy, or there is no current one
+            desired_result = result
+            break
+
+if desired_result == "":
+    print("No results with desired source.")
+    sys.exit(1)
+
+output_properties = args.output_properties.split(",")
+possible_properties = [
+    "similarity",
+    "title",
+    "thumbnail",
+    "title",
+    "author_name",
+    "author_url",
+    "url",
+    "source_url",
+    "index",
+    "episode",
+    "year",
+    "timestamp",
+]
+
+# print results
+
+
+def get_booru_id(desired_result):
+    preferred_booru = earlier_in_list(source_hierarchy, "gelbooru", "danbooru")
+    less_preferred_booru = later_in_list(source_hierarchy, "gelbooru", "danbooru")
+    try:
+        booru_id = getattr(desired_result, preferred_booru + "_id")
+        return [preferred_booru, booru_id]
+    except:
+        booru_id = getattr(desired_result, less_preferred_booru + "_id")
+        return [less_preferred_booru, booru_id]
+
+
+def get_booru_url(desired_result):
+    [booru, booru_id] = get_booru_id(desired_result)
+    if booru == "gelbooru":
+        return "https://gelbooru.com/index.php?page=post&s=view&id=" + str(booru_id)
+    elif booru == "danbooru":
+        return "https://danbooru.donmai.us/posts/" + str(booru_id)
+    else:
+        return ""
+
+
+printlines = []
+
+for property in output_properties:
+    if property == "booru_id":
+        printlines.append(get_booru_id(desired_result)[1])
+    elif property == "booru_url":
+        printlines.append(get_booru_url(desired_result))
+    else:
+        printlines.append(getattr(desired_result, property))
+
+
+for printline in printlines:
+    print(printline)
+    exit(0)
